@@ -137,7 +137,7 @@ export const useSessionsQuery = () => {
   return useQuery<SessionMeta[]>({
     queryKey: ["sessions"],
     queryFn: async () => sessionsApi.list(),
-    staleTime: 30 * 1000,
+    staleTime: 2 * 60 * 1000,
   });
 };
 
@@ -158,5 +158,13 @@ export const useSessionAliasesQuery = () => {
     queryKey: ["sessionAliases"],
     queryFn: async () => sessionsApi.getAllAliases(),
     staleTime: 60 * 1000,
+  });
+};
+
+export const useSessionConfigQuery = (key: string) => {
+  return useQuery<string | null>({
+    queryKey: ["sessionConfig", key],
+    queryFn: async () => sessionsApi.getConfig(key),
+    staleTime: 5 * 60 * 1000,
   });
 };
