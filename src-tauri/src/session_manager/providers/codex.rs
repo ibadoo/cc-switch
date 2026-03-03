@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::Value;
@@ -8,9 +9,16 @@ use serde_json::Value;
 use crate::codex_config::get_codex_config_dir;
 use crate::session_manager::{SessionMessage, SessionMeta};
 
-use super::utils::{extract_text, parse_timestamp_to_ms};
+use super::utils::{
+    extract_text, parse_timestamp_to_ms, path_basename, read_head_tail_lines, truncate_summary,
+};
 
 const PROVIDER_ID: &str = "codex";
+
+static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+        .unwrap()
+});
 
 pub fn scan_sessions() -> Vec<SessionMeta> {
     let root = get_codex_config_dir().join("sessions");
@@ -19,7 +27,7 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
 
     let mut sessions = Vec::new();
     for path in files {
-        if let Some(meta) = parse_session_from_path(&path) {
+        if let Some(meta) = parse_session(&path) {
             sessions.push(meta);
         }
     }
@@ -67,28 +75,92 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
 
         let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
 
-        messages.push(SessionMessage {
-            role,
-            content,
-            ts,
-            tool_name: None,
-        });
+        messages.push(SessionMessage { role, content, ts, tool_name: None });
     }
 
     Ok(messages)
 }
 
-/// 从文件路径和 stat 信息推导会话元数据，不打开文件
-fn parse_session_from_path(path: &Path) -> Option<SessionMeta> {
-    let session_id = infer_session_id_from_filename(path)?;
-    let (created_at, last_active_at) = get_file_timestamps(path);
+fn parse_session(path: &Path) -> Option<SessionMeta> {
+    let (head, tail) = read_head_tail_lines(path, 10, 30).ok()?;
+
+    let mut session_id: Option<String> = None;
+    let mut project_dir: Option<String> = None;
+    let mut created_at: Option<i64> = None;
+
+    // Extract metadata from head lines
+    for line in &head {
+        let value: Value = match serde_json::from_str(line) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        if created_at.is_none() {
+            created_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
+        }
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            if let Some(payload) = value.get("payload") {
+                if session_id.is_none() {
+                    session_id = payload
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string());
+                }
+                if project_dir.is_none() {
+                    project_dir = payload
+                        .get("cwd")
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string());
+                }
+                if let Some(ts) = payload.get("timestamp").and_then(parse_timestamp_to_ms) {
+                    created_at.get_or_insert(ts);
+                }
+            }
+        }
+    }
+
+    // Extract last_active_at and summary from tail lines (reverse order)
+    let mut last_active_at: Option<i64> = None;
+    let mut summary: Option<String> = None;
+
+    for line in tail.iter().rev() {
+        let value: Value = match serde_json::from_str(line) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        if last_active_at.is_none() {
+            last_active_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
+        }
+        if summary.is_none() && value.get("type").and_then(Value::as_str) == Some("response_item") {
+            if let Some(payload) = value.get("payload") {
+                if payload.get("type").and_then(Value::as_str) == Some("message") {
+                    let text = payload.get("content").map(extract_text).unwrap_or_default();
+                    if !text.trim().is_empty() {
+                        summary = Some(text);
+                    }
+                }
+            }
+        }
+        if last_active_at.is_some() && summary.is_some() {
+            break;
+        }
+    }
+
+    let session_id = session_id.or_else(|| infer_session_id_from_filename(path));
+    let session_id = session_id?;
+
+    let title = project_dir
+        .as_deref()
+        .and_then(path_basename)
+        .map(|value| value.to_string());
+
+    let summary = summary.map(|text| truncate_summary(&text, 160));
 
     Some(SessionMeta {
         provider_id: PROVIDER_ID.to_string(),
         session_id: session_id.clone(),
-        title: None,
-        summary: None,
-        project_dir: None,
+        title,
+        summary,
+        project_dir,
         created_at,
         last_active_at,
         source_path: Some(path.to_string_lossy().to_string()),
@@ -96,34 +168,9 @@ fn parse_session_from_path(path: &Path) -> Option<SessionMeta> {
     })
 }
 
-/// 从文件 metadata 获取创建时间和修改时间（毫秒）
-fn get_file_timestamps(path: &Path) -> (Option<i64>, Option<i64>) {
-    let md = match std::fs::metadata(path) {
-        Ok(md) => md,
-        Err(_) => return (None, None),
-    };
-
-    let mtime = md
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64);
-
-    let ctime = md
-        .created()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64);
-
-    (ctime, mtime)
-}
-
 fn infer_session_id_from_filename(path: &Path) -> Option<String> {
     let file_name = path.file_name()?.to_string_lossy();
-    let re =
-        Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-            .ok()?;
-    re.find(&file_name).map(|mat| mat.as_str().to_string())
+    UUID_RE.find(&file_name).map(|mat| mat.as_str().to_string())
 }
 
 fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>) {

@@ -14,7 +14,6 @@ import type {
   ProviderTestConfig,
   ProviderProxyConfig,
   ClaudeApiFormat,
-  ClaudeApiKeyField,
 } from "@/types";
 import {
   providerPresets,
@@ -47,9 +46,9 @@ import {
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
 import CodexConfigEditor from "./CodexConfigEditor";
+import { CommonConfigEditor } from "./CommonConfigEditor";
 import GeminiConfigEditor from "./GeminiConfigEditor";
 import JsonEditor from "@/components/JsonEditor";
-import { ClaudeQuickToggles, jsonMergePatch } from "./ClaudeQuickToggles";
 import { Label } from "@/components/ui/label";
 import { ProviderPresetSelector } from "./ProviderPresetSelector";
 import { BasicFormFields } from "./BasicFormFields";
@@ -57,7 +56,6 @@ import { ClaudeFormFields } from "./ClaudeFormFields";
 import { CodexFormFields } from "./CodexFormFields";
 import { GeminiFormFields } from "./GeminiFormFields";
 import { OmoFormFields } from "./OmoFormFields";
-import { OmoCommonConfigEditor } from "./OmoCommonConfigEditor";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
 import {
   ProviderAdvancedConfig,
@@ -71,15 +69,17 @@ import {
   useCodexConfigState,
   useApiKeyLink,
   useTemplateValues,
+  useCommonConfigSnippet,
+  useCodexCommonConfig,
   useSpeedTestEndpoints,
   useCodexTomlValidation,
   useGeminiConfigState,
+  useGeminiCommonConfig,
   useOmoModelSource,
   useOpencodeFormState,
   useOmoDraftState,
   useOpenclawFormState,
 } from "./hooks";
-import { useOmoGlobalConfig, useOmoSlimGlobalConfig } from "@/lib/query/omo";
 import {
   CLAUDE_DEFAULT_CONFIG,
   CODEX_DEFAULT_CONFIG,
@@ -187,13 +187,6 @@ export function ProviderForm({
   const isOmoCategory = appId === "opencode" && category === "omo";
   const isOmoSlimCategory = appId === "opencode" && category === "omo-slim";
   const isAnyOmoCategory = isOmoCategory || isOmoSlimCategory;
-  const { data: queriedStandardOmoGlobalConfig } =
-    useOmoGlobalConfig(isOmoCategory);
-  const { data: queriedSlimOmoGlobalConfig } =
-    useOmoSlimGlobalConfig(isOmoSlimCategory);
-  const queriedOmoGlobalConfig = isOmoSlimCategory
-    ? queriedSlimOmoGlobalConfig
-    : queriedStandardOmoGlobalConfig;
 
   useEffect(() => {
     setSelectedPresetId(initialData ? null : "custom");
@@ -244,55 +237,6 @@ export function ProviderForm({
     mode: "onSubmit",
   });
 
-  const [localApiFormat, setLocalApiFormat] = useState<ClaudeApiFormat>(() => {
-    if (appId !== "claude") return "anthropic";
-    return initialData?.meta?.apiFormat ?? "anthropic";
-  });
-
-  const handleApiFormatChange = useCallback((format: ClaudeApiFormat) => {
-    setLocalApiFormat(format);
-  }, []);
-
-  const [localApiKeyField, setLocalApiKeyField] = useState<ClaudeApiKeyField>(
-    () => {
-      if (appId !== "claude") return "ANTHROPIC_AUTH_TOKEN";
-      if (initialData?.meta?.apiKeyField) return initialData.meta.apiKeyField;
-      try {
-        const config = initialData?.settingsConfig;
-        if (
-          config?.env &&
-          (config.env as Record<string, unknown>).ANTHROPIC_API_KEY !==
-            undefined
-        )
-          return "ANTHROPIC_API_KEY";
-      } catch {}
-      return "ANTHROPIC_AUTH_TOKEN";
-    },
-  );
-
-  const handleApiKeyFieldChange = useCallback(
-    (field: ClaudeApiKeyField) => {
-      setLocalApiKeyField(field);
-      try {
-        const config = JSON.parse(form.getValues("settingsConfig") || "{}") as {
-          env?: Record<string, unknown>;
-        };
-        const env = (config.env ?? {}) as Record<string, unknown>;
-        const oldField =
-          field === "ANTHROPIC_API_KEY"
-            ? "ANTHROPIC_AUTH_TOKEN"
-            : "ANTHROPIC_API_KEY";
-        if (oldField in env) {
-          env[field] = env[oldField];
-          delete env[oldField];
-          config.env = env;
-          form.setValue("settingsConfig", JSON.stringify(config, null, 2));
-        }
-      } catch {}
-    },
-    [form],
-  );
-
   const {
     apiKey,
     handleApiKeyChange,
@@ -303,7 +247,6 @@ export function ProviderForm({
     selectedPresetId,
     category,
     appType: appId,
-    apiKeyField: appId === "claude" ? localApiKeyField : undefined,
   });
 
   const { baseUrl, handleClaudeBaseUrlChange } = useBaseUrlState({
@@ -326,6 +269,15 @@ export function ProviderForm({
     settingsConfig: form.getValues("settingsConfig"),
     onConfigChange: (config) => form.setValue("settingsConfig", config),
   });
+
+  const [localApiFormat, setLocalApiFormat] = useState<ClaudeApiFormat>(() => {
+    if (appId !== "claude") return "anthropic";
+    return initialData?.meta?.apiFormat ?? "anthropic";
+  });
+
+  const handleApiFormatChange = useCallback((format: ClaudeApiFormat) => {
+    setLocalApiFormat(format);
+  }, []);
 
   const {
     codexAuth,
@@ -425,6 +377,37 @@ export function ProviderForm({
   });
 
   const {
+    useCommonConfig,
+    commonConfigSnippet,
+    commonConfigError,
+    handleCommonConfigToggle,
+    handleCommonConfigSnippetChange,
+    isExtracting: isClaudeExtracting,
+    handleExtract: handleClaudeExtract,
+  } = useCommonConfigSnippet({
+    settingsConfig: form.getValues("settingsConfig"),
+    onConfigChange: (config) => form.setValue("settingsConfig", config),
+    initialData: appId === "claude" ? initialData : undefined,
+    selectedPresetId: selectedPresetId ?? undefined,
+    enabled: appId === "claude",
+  });
+
+  const {
+    useCommonConfig: useCodexCommonConfigFlag,
+    commonConfigSnippet: codexCommonConfigSnippet,
+    commonConfigError: codexCommonConfigError,
+    handleCommonConfigToggle: handleCodexCommonConfigToggle,
+    handleCommonConfigSnippetChange: handleCodexCommonConfigSnippetChange,
+    isExtracting: isCodexExtracting,
+    handleExtract: handleCodexExtract,
+  } = useCodexCommonConfig({
+    codexConfig,
+    onConfigChange: handleCodexConfigChange,
+    initialData: appId === "codex" ? initialData : undefined,
+    selectedPresetId: selectedPresetId ?? undefined,
+  });
+
+  const {
     geminiEnv,
     geminiConfig,
     geminiApiKey,
@@ -439,6 +422,7 @@ export function ProviderForm({
     handleGeminiConfigChange,
     resetGeminiConfig,
     envStringToObj,
+    envObjToString,
   } = useGeminiConfigState({
     initialData: appId === "gemini" ? initialData : undefined,
   });
@@ -489,6 +473,23 @@ export function ProviderForm({
     [originalHandleGeminiModelChange, updateGeminiEnvField],
   );
 
+  const {
+    useCommonConfig: useGeminiCommonConfigFlag,
+    commonConfigSnippet: geminiCommonConfigSnippet,
+    commonConfigError: geminiCommonConfigError,
+    handleCommonConfigToggle: handleGeminiCommonConfigToggle,
+    handleCommonConfigSnippetChange: handleGeminiCommonConfigSnippetChange,
+    isExtracting: isGeminiExtracting,
+    handleExtract: handleGeminiExtract,
+  } = useGeminiCommonConfig({
+    envValue: geminiEnv,
+    onEnvChange: handleGeminiEnvChange,
+    envStringToObj,
+    envObjToString,
+    initialData: appId === "gemini" ? initialData : undefined,
+    selectedPresetId: selectedPresetId ?? undefined,
+  });
+
   // ── Extracted hooks: OpenCode / OMO / OpenClaw ─────────────────────
 
   const {
@@ -514,7 +515,6 @@ export function ProviderForm({
 
   const omoDraft = useOmoDraftState({
     initialOmoSettings,
-    queriedOmoGlobalConfig,
     isEditMode,
     appId,
     category,
@@ -527,6 +527,8 @@ export function ProviderForm({
     onSettingsConfigChange: (config) => form.setValue("settingsConfig", config),
     getSettingsConfig: () => form.getValues("settingsConfig"),
   });
+
+  const [isCommonConfigModalOpen, setIsCommonConfigModalOpen] = useState(false);
 
   const handleSubmit = (values: ProviderFormData) => {
     if (appId === "claude" && templateValueEntries.length > 0) {
@@ -683,7 +685,6 @@ export function ProviderForm({
       (category === "omo" || category === "omo-slim")
     ) {
       const omoConfig: Record<string, unknown> = {};
-      omoConfig.useCommonConfig = omoDraft.useOmoCommonConfig;
       if (Object.keys(omoDraft.omoAgents).length > 0) {
         omoConfig.agents = omoDraft.omoAgents;
       }
@@ -821,10 +822,6 @@ export function ProviderForm({
       apiFormat:
         appId === "claude" && category !== "official"
           ? localApiFormat
-          : undefined,
-      apiKeyField:
-        appId === "claude" && category !== "official"
-          ? localApiKeyField
           : undefined,
     };
 
@@ -1064,12 +1061,6 @@ export function ProviderForm({
       setLocalApiFormat("anthropic");
     }
 
-    if (preset.apiKeyField) {
-      setLocalApiKeyField(preset.apiKeyField);
-    } else {
-      setLocalApiKeyField("ANTHROPIC_AUTH_TOKEN");
-    }
-
     form.reset({
       name: preset.name,
       websiteUrl: preset.websiteUrl ?? "",
@@ -1241,6 +1232,7 @@ export function ProviderForm({
             providerId={providerId}
             shouldShowApiKey={
               (selectedPresetId === "custom" ||
+                category !== "cloud_provider" ||
                 hasApiKeyField(form.getValues("settingsConfig"), "claude")) &&
               shouldShowApiKey(
                 form.getValues("settingsConfig"),
@@ -1278,8 +1270,6 @@ export function ProviderForm({
             speedTestEndpoints={speedTestEndpoints}
             apiFormat={localApiFormat}
             onApiFormatChange={handleApiFormatChange}
-            apiKeyField={localApiKeyField}
-            onApiKeyFieldChange={handleApiKeyFieldChange}
           />
         )}
 
@@ -1406,8 +1396,15 @@ export function ProviderForm({
               configValue={codexConfig}
               onAuthChange={setCodexAuth}
               onConfigChange={handleCodexConfigChange}
+              useCommonConfig={useCodexCommonConfigFlag}
+              onCommonConfigToggle={handleCodexCommonConfigToggle}
+              commonConfigSnippet={codexCommonConfigSnippet}
+              onCommonConfigSnippetChange={handleCodexCommonConfigSnippetChange}
+              commonConfigError={codexCommonConfigError}
               authError={codexAuthError}
               configError={codexConfigError}
+              onExtract={handleCodexExtract}
+              isExtracting={isCodexExtracting}
             />
             {settingsConfigErrorField}
           </>
@@ -1418,27 +1415,32 @@ export function ProviderForm({
               configValue={geminiConfig}
               onEnvChange={handleGeminiEnvChange}
               onConfigChange={handleGeminiConfigChange}
+              useCommonConfig={useGeminiCommonConfigFlag}
+              onCommonConfigToggle={handleGeminiCommonConfigToggle}
+              commonConfigSnippet={geminiCommonConfigSnippet}
+              onCommonConfigSnippetChange={
+                handleGeminiCommonConfigSnippetChange
+              }
+              commonConfigError={geminiCommonConfigError}
               envError={envError}
               configError={geminiConfigError}
+              onExtract={handleGeminiExtract}
+              isExtracting={isGeminiExtracting}
             />
             {settingsConfigErrorField}
           </>
         ) : appId === "opencode" &&
           (category === "omo" || category === "omo-slim") ? (
-          <OmoCommonConfigEditor
-            previewValue={omoDraft.mergedOmoJsonPreview}
-            useCommonConfig={omoDraft.useOmoCommonConfig}
-            onCommonConfigToggle={omoDraft.setUseOmoCommonConfig}
-            isModalOpen={omoDraft.isOmoConfigModalOpen}
-            onEditClick={omoDraft.handleOmoEditClick}
-            onModalClose={() => omoDraft.setIsOmoConfigModalOpen(false)}
-            onSave={omoDraft.handleOmoGlobalConfigSave}
-            isSaving={omoDraft.isOmoSaving}
-            onGlobalConfigStateChange={omoDraft.setOmoGlobalState}
-            globalConfigRef={omoDraft.omoGlobalConfigRef}
-            fieldsKey={omoDraft.omoFieldsKey}
-            isSlim={category === "omo-slim"}
-          />
+          <div className="space-y-2">
+            <Label>{t("provider.configJson")}</Label>
+            <JsonEditor
+              value={omoDraft.mergedOmoJsonPreview}
+              onChange={() => {}}
+              rows={14}
+              showValidation={false}
+              language="json"
+            />
+          </div>
         ) : appId === "opencode" &&
           category !== "omo" &&
           category !== "omo-slim" ? (
@@ -1493,42 +1495,20 @@ export function ProviderForm({
           </>
         ) : (
           <>
-            <div className="space-y-2">
-              <Label htmlFor="settingsConfig">
-                {t("claudeConfig.configLabel")}
-              </Label>
-              <ClaudeQuickToggles
-                onPatchApplied={(patch) => {
-                  try {
-                    const cfg = JSON.parse(
-                      form.getValues("settingsConfig") || "{}",
-                    );
-                    jsonMergePatch(cfg, patch);
-                    form.setValue(
-                      "settingsConfig",
-                      JSON.stringify(cfg, null, 2),
-                    );
-                  } catch {
-                    // invalid JSON in editor — skip mirror
-                  }
-                }}
-              />
-              <JsonEditor
-                value={form.watch("settingsConfig")}
-                onChange={(value) => form.setValue("settingsConfig", value)}
-                placeholder={`{
-  "env": {
-    "ANTHROPIC_AUTH_TOKEN": "your-api-key-here"
-  }
-}`}
-                rows={14}
-                showValidation={true}
-                language="json"
-              />
-              <p className="text-xs text-muted-foreground">
-                {t("claudeConfig.fullSettingsHint")}
-              </p>
-            </div>
+            <CommonConfigEditor
+              value={form.getValues("settingsConfig")}
+              onChange={(value) => form.setValue("settingsConfig", value)}
+              useCommonConfig={useCommonConfig}
+              onCommonConfigToggle={handleCommonConfigToggle}
+              commonConfigSnippet={commonConfigSnippet}
+              onCommonConfigSnippetChange={handleCommonConfigSnippetChange}
+              commonConfigError={commonConfigError}
+              onEditClick={() => setIsCommonConfigModalOpen(true)}
+              isModalOpen={isCommonConfigModalOpen}
+              onModalClose={() => setIsCommonConfigModalOpen(false)}
+              onExtract={handleClaudeExtract}
+              isExtracting={isClaudeExtracting}
+            />
             {settingsConfigErrorField}
           </>
         )}

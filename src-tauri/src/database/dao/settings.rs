@@ -38,7 +38,7 @@ impl Database {
         Ok(())
     }
 
-    // --- Config Snippets 辅助方法 ---
+    // --- 通用配置片段 (Common Config Snippet) ---
 
     /// 获取通用配置片段
     pub fn get_config_snippet(&self, app_type: &str) -> Result<Option<String>, AppError> {
